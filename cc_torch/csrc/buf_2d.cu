@@ -5,61 +5,6 @@
 #define BLOCK_COLS 16
 #define BLOCK_BATCHES 4 // You may change this for better performance, but for me, this is what i can have for my GPU
 
-struct comp_int32{
-    __host__ __device__ bool operator() (int32_t x, int32_t y) {return x < y;}
-};
-
-
-struct identity_functor{
-    __device__ int32_t operator()(int idx){
-        return idx;
-    }
-};
-
-struct sort_functor{
-
-    thrust::device_ptr<int32_t> data;
-    int dsize;
-    __host__ __device__ void operator()(int start_idx, int end_idx){
-        thrust::sort(thrust::device, data + (dsize) * start_idx, data + (dsize) * end_idx + 1);
-    }
-};
-
-namespace label_collecting{
-/*
-    This namespace contains impl collecting labels into a final set;
- */
-    __global__ void collect(const int32_t* label, int32_t* result_idx, int32_t *result_count, 
-                            const uint32_t W, const uint32_t H, const uint32_t N){
-        const uint32_t row = (blockIdx.y * blockDim.y + threadIdx.y) * 2;
-        const uint32_t col = (blockIdx.x * blockDim.x + threadIdx.x) * 2;
-        const uint32_t batch = (blockIdx.z * blockDim.z + threadIdx.z);
-        
-        if (row >= H || col >= W || batch >= N) return;
-
-        const uint32_t curr_idx = row * W + col;
-        const uint32_t batch_delta = batch * H * W; 
-        
-        //const int32_t label_lu = label[batch_delta + curr_idx];
-        int32_t cur_flg = -1, sweet_point = 0;
-        if (label[batch_delta + curr_idx] == curr_idx) {
-            cur_flg = atomicAdd(result_count + batch_delta, 1);
-            sweet_point = curr_idx;
-        }else if (label[batch_delta + curr_idx + 1] == curr_idx + 1){
-            cur_flg = atomicAdd(result_count + batch_delta, 1);
-            sweet_point = curr_idx + 1;
-        }else if (label[batch_delta + curr_idx + 1 + W] == curr_idx + 1 + W){
-            cur_flg = atomicAdd(result_count + batch_delta, 1);
-            sweet_point = curr_idx + 1 + W;
-        }else if (label[batch_delta + curr_idx + W] == curr_idx + W){
-            cur_flg = atomicAdd(result_count + batch_delta, 1);
-            sweet_point = curr_idx + W;
-        }else return ;
-        
-        result_idx[cur_flg + 1] = sweet_point;
-    }
-}
-
 
 namespace cc2d {
     __global__ void
@@ -178,11 +123,13 @@ namespace cc2d {
             return;
 
         const int32_t y = label[idx] + 1;
+        const int32_t delta = batch * H * W;
         int32_t block_size = size[idx];
+        
         if (idx == label[idx])  block_size -= size[idx + 1];
         
         if (img[idx]) {
-            label[idx] = y;
+            label[idx] = y - delta;
             size[idx] = block_size;
         }
         else {
@@ -191,7 +138,7 @@ namespace cc2d {
         }
         if (col + 1 < W) {
             if (img[idx + 1]) {
-                label[idx + 1] = y;
+                label[idx + 1] = y - delta;
                 size[idx + 1] = block_size;
             }else {
                 label[idx + 1] = 0;
@@ -200,7 +147,7 @@ namespace cc2d {
 
             if (row + 1 < H) {
                 if (img[idx + W + 1]) {
-                    label[idx + W + 1] = y;
+                    label[idx + W + 1] = y - delta;
                     size[idx + W + 1] = block_size;
                 }else {
                     label[idx + W + 1] = 0;
@@ -211,7 +158,7 @@ namespace cc2d {
 
         if (row + 1 < H) {
             if (img[idx + W]) {
-                label[idx + W] = y;
+                label[idx + W] = y - delta;
                 size[idx + W] = block_size;
             }else {
                 label[idx + W] = 0;
@@ -274,17 +221,7 @@ std::vector <torch::Tensor> connected_componnets_labeling_2d(const torch::Tensor
                     label.data_ptr<int32_t>(),
                     size.data_ptr<int32_t>(),
                     W, H, N
-                    //count.data_ptr<int32_t>()
     );
 
-    //auto count_start_ptr =  count.data_ptr<int32_t>();
-    //auto max_set_size = thrust::max_element(count_start_ptr, count_start_ptr + N, comp_int32);
-    //torch::Tensor pos_set = torch::zeros({N, max_set_size}, on_device_i32_config);
-
-    //auto flg = idx_tmp == label;
-    //std::cerr << flg << std::endl;
-    //std::cerr << count << std::endl;
-    //std::cerr << size[flg] << std::endl;
-    //auto result_sit = :
     return std::vector < torch::Tensor > {label, size};
 }
